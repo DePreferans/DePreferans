@@ -5,12 +5,12 @@ pragma solidity ^0.8.0;
 contract Preferans {
     enum GameType { None, Spades, Diamonds, Hearts, Clubs, Misere, NoTrump }
     enum BiddingStatus { NotStarted, InProgress, Finished }
-    enum PlayerStatus { NotIn, In, Out }
+    enum PlayerStatus { NotIn, In, Out, Called }
 
     struct Player {
-        address addr;
+        address payable addr;
         uint256 score;
-        uint256 bula;
+        int256 bula;
         uint256 leftSupa; 
         uint256 rightSupa; 
         PlayerStatus status;
@@ -18,6 +18,7 @@ contract Preferans {
         uint256 refeCount;
         uint256 tricksTaken; 
         uint256[] hand; 
+        bool withdrawn;
     }
 
     struct Trick {
@@ -68,19 +69,20 @@ contract Preferans {
         _;
     }
 
-    constructor(address[3] memory playerAddresses) payable {
+    constructor(address[3] memory playerAddresses, uint256 refeCount) payable {
         for (uint256 i = 0; i < 3; i++) {
             players[i] = Player({
-                addr: playerAddresses[i],
+                addr: payable (playerAddresses[i]),
                 score: msg.value, 
-                bula: msg.value / 100,
+                bula: int256(msg.value / 100),
                 leftSupa: 0,
                 rightSupa: 0,
                 status: PlayerStatus.NotIn,
                 kontra: false,
                 refeCount: 0,
                 tricksTaken: 0,
-                hand: new uint256[] (0)
+                hand: new uint256[] (0),
+                withdrawn: false
             });
         }
         currentPlayer = 0;
@@ -91,7 +93,7 @@ contract Preferans {
         kontraMultiplier = 1;
         kontraDeclared = false;
         dealer = playerAddresses[0]; 
-        totalRefes = 0;
+        totalRefes = refeCount;
 
         initializeCardMappings();
     }
@@ -203,6 +205,8 @@ contract Preferans {
 
         if (activePlayersCount() == 1 || (highestBid == 7 && firstBidderChecked) || atLeastOneGameCalledAndOthersBidded()) {
             endBidding();
+        } else if (activePlayersCount() == 0 && bidCount == 3) {
+            endBidding();
         }
     }
 
@@ -276,6 +280,36 @@ contract Preferans {
         require(biddingStatus == BiddingStatus.Finished, "Bidding not finished");
         require(msg.sender == winningBidder, "Only the winning bidder can declare the game");
         currentGame = game;
+        for(uint i = 0; i < 3; i++) {
+            if(players[i].addr == msg.sender && players[i].refeCount > 0){
+                kontraMultiplier *= 2;
+                players[i].refeCount--;
+            }
+        }
+    }
+
+    function removeCardsAfterAddingStockCards(uint256 card1, uint256 card2) external onlyPlayer {
+        require(biddingStatus == BiddingStatus.Finished, "Bidding not finished");
+        require(msg.sender == winningBidder, "Only the winning bidder can declare the game");
+        for (uint256 i = 0; i < 3; i++) {
+            if(players[i].addr == winningBidder) {
+                uint256 index1 = findCardIndex(players[i].hand, card1);
+                require(index1 < players[i].hand.length, "Card not found in hand");
+
+                uint256 index2 = findCardIndex(players[i].hand, card2);
+                require(index2 < players[i].hand.length, "Card not found in hand");
+
+                for (uint256 j = index1; j < players[i].hand.length - 1; j++) {
+                    players[i].hand[j] = players[i].hand[j + 1];
+                }
+                players[i].hand.pop();
+                for (uint256 k = index2; k < players[i].hand.length - 1; k++) {
+                    players[i].hand[k] = players[i].hand[k + 1];
+                }
+                players[i].hand.pop();
+                break;
+            }
+        }
     }
 
     function followGame(bool follow) external onlyPlayer {
@@ -287,9 +321,42 @@ contract Preferans {
         }
     }
 
+    function callToGame() external onlyPlayer {
+        require(biddingStatus == BiddingStatus.Finished, "Bidding not finished");
+        for (uint256 i = 0; i < 3; i++) {
+            if (players[i].addr == msg.sender && players[i].status == PlayerStatus.In && players[i].addr != winningBidder) {
+                uint256 leftPlayerIndex = (i + 2) % 3;
+                uint256 rightPlayerIndex = (i + 1) % 3;
+                if (players[leftPlayerIndex].status == PlayerStatus.NotIn){
+                    players[leftPlayerIndex].status = PlayerStatus.Called;
+                } else if (players[rightPlayerIndex].status == PlayerStatus.NotIn){
+                    players[rightPlayerIndex].status = PlayerStatus.Called;
+                }
+            }
+        }
+    }
+
     function declareKontra() external onlyPlayer {
         require(biddingStatus == BiddingStatus.Finished, "Bidding not finished");
-        kontraDeclared = true;
+        for (uint256 i = 0; i < 3; i++) {
+            if (players[i].addr == msg.sender && players[i].status == PlayerStatus.In && players[i].addr != winningBidder) {
+                kontraDeclared = true;
+                kontraMultiplier *= 2;
+                uint256 leftPlayerIndex = (i + 2) % 3;
+                uint256 rightPlayerIndex = (i + 1) % 3;
+                if (players[leftPlayerIndex].status == PlayerStatus.NotIn){
+                    players[leftPlayerIndex].status = PlayerStatus.Called;
+                } else if (players[rightPlayerIndex].status == PlayerStatus.NotIn){
+                    players[rightPlayerIndex].status = PlayerStatus.Called;
+                }
+            }
+        }
+    }
+
+    function declareReKontra() external onlyPlayer() {
+        require(biddingStatus == BiddingStatus.Finished, "Bidding not finished");
+        require(winningBidder == msg.sender, "Only Bidding winner can recounter");
+        require(kontraDeclared == true, "Kontra wans-t declared");
         kontraMultiplier *= 2;
     }
 
@@ -432,40 +499,84 @@ contract Preferans {
 
     function calculateScores() internal {
         uint256 baseScore;
+        uint8 gameWasCalled = (gameCalled ? 2 : 0);
+        uint8 playersThatPlayedCount = 0;
         if (currentGame == GameType.Spades) {
-            baseScore = 2;
+            baseScore = 4 + gameWasCalled;
         } else if (currentGame == GameType.Diamonds) {
-            baseScore = 3;
+            baseScore = 6 + gameWasCalled;
         } else if (currentGame == GameType.Hearts) {
-            baseScore = 4;
+            baseScore = 8 + gameWasCalled;
         } else if (currentGame == GameType.Clubs) {
-            baseScore = 5;
+            baseScore = 10 + gameWasCalled;
         } else if (currentGame == GameType.Misere) {
-            baseScore = 6;
+            baseScore = 12 + gameWasCalled;
         } else if (currentGame == GameType.NoTrump) {
-            baseScore = 7;
+            baseScore = 14 + gameWasCalled;
         }
-
         for (uint256 i = 0; i < 3; i++) {
-            if (players[i].status == PlayerStatus.In) {
-                if (players[i].tricksTaken < baseScore) {
-                    players[i].bula += baseScore * kontraMultiplier;
-                } else {
-                    players[i].bula -= baseScore * kontraMultiplier;
-                }
-            } else {
-                uint256 leftPlayerIndex = (i + 2) % 3;
-                uint256 rightPlayerIndex = (i + 1) % 3;
-                players[i].leftSupa += players[leftPlayerIndex].tricksTaken * baseScore * kontraMultiplier;
-                players[i].rightSupa += players[rightPlayerIndex].tricksTaken * baseScore * kontraMultiplier;
+            if (players[i].status == PlayerStatus.In || players[i].status == PlayerStatus.Called ) {
+                playersThatPlayedCount++;
             }
+        }
+        for (uint256 i = 0; i < 3; i++) {
+            uint256 leftPlayerIndex = (i + 2) % 3;
+            uint256 rightPlayerIndex = (i + 1) % 3;
+            if (players[i].status == PlayerStatus.In) {
+                if(players[i].addr == winningBidder) {
+                    if(currentGame == GameType.Misere && players[i].tricksTaken == 0) {
+                        players[i].bula -= int256(baseScore * kontraMultiplier);
+                    } else if (players[i].tricksTaken < 6) {
+                        players[i].bula -= int256(baseScore * kontraMultiplier);
+                    } else {
+                        players[i].bula += int256(baseScore * kontraMultiplier);
+                    }
+                }else {
+                    uint256 totalTricksTaken = players[i].tricksTaken + (
+                        (players[leftPlayerIndex].status == PlayerStatus.Called || players[leftPlayerIndex].status == PlayerStatus.In) && players[leftPlayerIndex].addr != winningBidder ? 
+                        players[leftPlayerIndex].tricksTaken : 
+                        0) + 
+                    (
+                        (players[rightPlayerIndex].status == PlayerStatus.Called || players[rightPlayerIndex].status == PlayerStatus.In) && players[rightPlayerIndex].addr != winningBidder ? 
+                        players[rightPlayerIndex].tricksTaken : 
+                        0
+                    );
+                    if(playersThatPlayedCount > 2 && totalTricksTaken < 4) {
+                        players[i].bula += int256(baseScore * kontraMultiplier);
+                        if(players[leftPlayerIndex].addr == winningBidder) {
+                            players[i].leftSupa += totalTricksTaken * baseScore * kontraMultiplier;
+                        }
+                        if(players[rightPlayerIndex].addr == winningBidder) {
+                            players[i].rightSupa += totalTricksTaken * baseScore * kontraMultiplier;
+                        }
+                    } else if(players[i].tricksTaken < 2) {
+                        players[i].bula += int256(baseScore * kontraMultiplier);
+                        if(players[leftPlayerIndex].addr == winningBidder) {
+                            players[i].leftSupa +=  players[i].tricksTaken * baseScore * kontraMultiplier;
+                        }
+                        if(players[rightPlayerIndex].addr == winningBidder) {
+                            players[i].rightSupa += players[i].tricksTaken * baseScore * kontraMultiplier;
+                        }
+                    }
+                    else {
+                        if(players[leftPlayerIndex].addr == winningBidder) {
+                            players[i].leftSupa +=  players[i].tricksTaken * baseScore * kontraMultiplier;
+                        }
+                        if(players[rightPlayerIndex].addr == winningBidder) {
+                            players[i].rightSupa += players[i].tricksTaken * baseScore * kontraMultiplier;
+                        }
+                    }
+                }
+            } 
         }
     }
 
-    function getCurrentScores() external view returns (uint256[3] memory) {
-        uint256[3] memory scores;
+    function getCurrentScores() external view returns (int256[3] memory) {
+        int256[3] memory scores;
         for (uint256 i = 0; i < 3; i++) {
-            scores[i] = players[i].score;
+            uint256 leftPlayerIndex = (i + 2) % 3;
+            uint256 rightPlayerIndex = (i + 1) % 3;
+            scores[i] = 0 - (players[i].bula*10) - int256(players[i].leftSupa) - int256(players[i].rightSupa) + int256(players[leftPlayerIndex].rightSupa) + int256(players[rightPlayerIndex].leftSupa); 
         }
         return scores;
     }
@@ -479,8 +590,8 @@ contract Preferans {
         return supas;
     }
 
-    function getCurrentBula() external view returns (uint256[3] memory) {
-        uint256[3] memory bulas;
+    function getCurrentBula() external view returns (int256[3] memory) {
+        int256[3] memory bulas;
         for (uint256 i = 0; i < 3; i++) {
             bulas[i] = players[i].bula;
         }
@@ -491,7 +602,7 @@ contract Preferans {
         for (uint256 i = 0; i < 3; i++) {
             players[i].refeCount++;
         }
-        totalRefes++;
+        totalRefes--;
     }
 
     function resetGame() internal {
@@ -503,6 +614,9 @@ contract Preferans {
         kontraMultiplier = 1;
         kontraDeclared = false;
         currentLeader = address(0);
+        delete gameCalls;
+        winningBidder = address(0);
+        winningBid = 0;
 
         for (uint256 i = 0; i < 3; i++) {
             players[i].status = PlayerStatus.NotIn;
@@ -513,5 +627,42 @@ contract Preferans {
 
     function nextTurn() internal {
         currentPlayer = (currentPlayer + 1) % 3;
+    }
+
+    function withdraw() external payable onlyPlayer() {
+        int256 difference = 0;
+        require(players[0].addr == msg.sender && players[0].withdrawn == false || 
+                players[1].addr == msg.sender && players[1].withdrawn == false || 
+                players[2].addr == msg.sender && players[2].withdrawn == false, 
+                "You have already withdrew" );
+
+        int256 totalBula = 0;
+        for(uint i = 0; i < 3; i++) {
+            totalBula += players[i].bula;
+        }
+        require(totalBula == 0, "Game is not over");
+
+        int256[3] memory scores;
+        for (uint256 i = 0; i < 3; i++) {
+            uint256 leftPlayerIndex = (i + 2) % 3;
+            uint256 rightPlayerIndex = (i + 1) % 3;
+            scores[i] = 0 - (players[i].bula*10) - int256(players[i].leftSupa) - int256(players[i].rightSupa) + int256(players[leftPlayerIndex].rightSupa) + int256(players[rightPlayerIndex].leftSupa); 
+        }
+        
+        for (uint256 i = 0; i < 3; i++) {
+            uint256 leftPlayerIndex = (i + 2) % 3;
+            uint256 rightPlayerIndex = (i + 1) % 3;
+            if(players[i].addr == msg.sender){
+                difference = scores[i] - scores[leftPlayerIndex];
+                if(difference < 0){
+                    players[i].addr.transfer(uint256(0 - difference));
+                }
+                difference = scores[i] - scores[rightPlayerIndex];
+                if(difference < 0){
+                    players[i].addr.transfer(uint256(0 - difference));
+                }
+            }
+        }
+
     }
 }

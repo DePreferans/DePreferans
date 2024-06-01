@@ -1,0 +1,1 @@
+//Ovde idu funkcije za komunikaciju sa smart contract-om

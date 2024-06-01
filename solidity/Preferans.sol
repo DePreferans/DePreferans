@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+
 contract Preferans {
     enum GameType { None, Spades, Diamonds, Hearts, Clubs, Misere, NoTrump }
     enum BiddingStatus { NotStarted, InProgress, Finished }
@@ -67,19 +68,19 @@ contract Preferans {
         _;
     }
 
-    constructor(address[3] memory playerAddresses) {
+    constructor(address[3] memory playerAddresses) payable {
         for (uint256 i = 0; i < 3; i++) {
             players[i] = Player({
                 addr: playerAddresses[i],
-                score: 100, 
-                bula: 0,
+                score: msg.value, 
+                bula: msg.value / 100,
                 leftSupa: 0,
                 rightSupa: 0,
                 status: PlayerStatus.NotIn,
                 kontra: false,
                 refeCount: 0,
                 tricksTaken: 0,
-                hand: new uint256 ()
+                hand: new uint256[] (0)
             });
         }
         currentPlayer = 0;
@@ -112,7 +113,7 @@ contract Preferans {
         firstBidder = players[currentBidderIndex].addr;
         firstBidderChecked = false;
         gameCalled = false;
-        gameCalls = new GameCall ;
+        delete gameCalls;
         for (uint256 i = 0; i < 3; i++) {
             hasBidded[players[i].addr] = false;
         }
@@ -120,7 +121,7 @@ contract Preferans {
     }
 
     function shuffleAndDeal() internal {
-        deck = new uint256 ;
+        deck = new uint256[] (0) ;
         for (uint256 i = 0; i < 32; i++) {
             deck[i] = i;
         }
@@ -133,6 +134,8 @@ contract Preferans {
                 players[i].hand[j] = deck[cardIndex++];
             }
         }
+        stock[0] = deck[30];
+        stock[1] = deck[31];
     }
 
     function shuffleDeck() internal {
@@ -171,7 +174,7 @@ contract Preferans {
                 gameType: gameType
             }));
             hasBidded[msg.sender] = true;
-            if (activePlayersCount() == 1 || atLeastOneGameCalledAndOthersBidded()) {
+            if (atLeastOneGameCalledAndOthersBidded()) {
                 endBidding();
             } else {
                 advanceBidder();
@@ -453,7 +456,7 @@ contract Preferans {
             } else {
                 uint256 leftPlayerIndex = (i + 2) % 3;
                 uint256 rightPlayerIndex = (i + 1) % 3;
-                players[i].leftSupa += players[i].tricksTaken * baseScore * kontraMultiplier;
+                players[i].leftSupa += players[leftPlayerIndex].tricksTaken * baseScore * kontraMultiplier;
                 players[i].rightSupa += players[rightPlayerIndex].tricksTaken * baseScore * kontraMultiplier;
             }
         }
@@ -504,7 +507,7 @@ contract Preferans {
         for (uint256 i = 0; i < 3; i++) {
             players[i].status = PlayerStatus.NotIn;
             players[i].tricksTaken = 0;
-            players[i].hand = new uint256 (0);
+            players[i].hand = new uint256[] (0);
         }
     }
 

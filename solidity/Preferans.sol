@@ -34,6 +34,7 @@ contract Preferans {
 
     GameCall[] public gameCalls;
     uint256[2] public stock;
+    
 
     Player[3] public players;
     uint256 public currentPlayer;
@@ -183,6 +184,7 @@ contract Preferans {
             }
             return;
         } else {
+            require(bid > highestBid && bid == highestBid + 1, "Cant overbid");
             require(bid <= 7, "Bid cannot exceed 7");
 
             if (msg.sender == firstBidder) {
@@ -655,11 +657,15 @@ contract Preferans {
             if(players[i].addr == msg.sender){
                 difference = scores[i] - scores[leftPlayerIndex];
                 if(difference < 0){
-                    players[i].addr.transfer(uint256(0 - difference));
+                    (bool sent, bytes memory data) = players[i].addr.call{value: uint256(0 - difference)}("");
+                    require(sent, "Failed to send wei");
+                    players[i].withdrawn = true;
                 }
                 difference = scores[i] - scores[rightPlayerIndex];
                 if(difference < 0){
-                    players[i].addr.transfer(uint256(0 - difference));
+                    (bool sent, bytes memory data) = players[i].addr.call{value: uint256(0 - difference)}("");
+                    require(sent, "Failed to send wei");
+                    players[i].withdrawn = true;
                 }
             }
         }
